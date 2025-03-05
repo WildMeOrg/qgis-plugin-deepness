@@ -4,6 +4,8 @@ from typing import List
 import cv2
 import numpy as np
 from qgis.core import QgsFeature, QgsGeometry, QgsProject, QgsVectorLayer
+from qgis.PyQt.QtCore import QVariant
+from qgis.core import QgsFields, QgsField
 
 from deepness.common.processing_parameters.detection_parameters import DetectionParameters
 from deepness.processing import processing_utils
@@ -128,9 +130,16 @@ class MapProcessorDetection(MapProcessorWithModel):
         for channel_id in channels:
             filtered_bounding_boxes = [det for det in bounding_boxes if det.clss == channel_id]
             print(f'Detections for class {channel_id}: {len(filtered_bounding_boxes)}')
+            
+            vlayer = QgsVectorLayer("multipolygon", self.model.get_channel_name(0, channel_id), "memory")
+            vlayer.setCrs(self.rlayer.crs())
+            prov = vlayer.dataProvider()
+            prov.addAttributes([QgsField("confidence", QVariant.Double)])
+            vlayer.updateFields()
 
             features = []
             for det in filtered_bounding_boxes:
+                feature = QgsFeature()
                 if det.mask is None:
                     bbox_corners_pixels = det.bbox.get_4_corners()
                     bbox_corners_crs = processing_utils.transform_points_list_xy_to_target_crs(
@@ -138,13 +147,13 @@ class MapProcessorDetection(MapProcessorWithModel):
                         extent=self.extended_extent,
                         rlayer_units_per_pixel=self.rlayer_units_per_pixel,
                     )
-                    feature = QgsFeature()
+                    #feature = QgsFeature() #move outside of the if block
                     polygon_xy_vec_vec = [
                         bbox_corners_crs
                     ]
                     geometry = QgsGeometry.fromPolygonXY(polygon_xy_vec_vec)
-                    feature.setGeometry(geometry)
-                    features.append(feature)
+                    #feature.setGeometry(geometry)
+                    #features.append(feature)
                 else:
                     contours, _ = cv2.findContours(det.mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     contours = sorted(contours, key=cv2.contourArea, reverse=True)
@@ -167,17 +176,20 @@ class MapProcessorDetection(MapProcessorWithModel):
                             rlayer_units_per_pixel=self.rlayer_units_per_pixel,
                         )
 
-                        feature = QgsFeature()
+                        #feature = QgsFeature()
                         polygon_xy_vec_vec = [
                             mask_corners_crs
                         ]
                         geometry = QgsGeometry.fromPolygonXY(polygon_xy_vec_vec)
-                        feature.setGeometry(geometry)
-                        features.append(feature)
-
-            vlayer = QgsVectorLayer("multipolygon", self.model.get_channel_name(0, channel_id), "memory")
-            vlayer.setCrs(self.rlayer.crs())
-            prov = vlayer.dataProvider()
+                        #feature.setGeometry(geometry)
+                        #features.append(feature)
+                feature.setGeometry(geometry)
+                feature.setAttributes([float(det.conf)])
+                features.append(feature)
+            
+            #vlayer = QgsVectorLayer("multipolygon", self.model.get_channel_name(0, channel_id), "memory")
+            #vlayer.setCrs(self.rlayer.crs())
+            #prov = vlayer.dataProvider()
 
             color = vlayer.renderer().symbol().color()
             OUTPUT_VLAYER_COLOR_TRANSPARENCY = 80
