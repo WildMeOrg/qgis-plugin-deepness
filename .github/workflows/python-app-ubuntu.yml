@@ -62,13 +62,13 @@ jobs:
         # we need 'xvfb-run' to simulate UI - otherwise qgis crushes
         xvfb-run -e /dev/stdout python3 -m pytest --cov=src/deepness/ --cov-report html test/
     - name: 'Upload Artifact - test coverage'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: htmlcov
         path: htmlcov/
         retention-days: 30
     - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: deepness
         path: out/deepness
