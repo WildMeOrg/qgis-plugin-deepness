@@ -64,12 +64,12 @@ jobs:
     - name: 'Upload Artifact - test coverage'
       uses: actions/upload-artifact@v4
       with:
-        name: htmlcov
+        name: htmlcov-${{ matrix.os }}
         path: htmlcov/
         retention-days: 30
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v4
       with:
-        name: deepness
+        name: deepness-${{ matrix.os }}
         path: out/deepness
         retention-days: 89
