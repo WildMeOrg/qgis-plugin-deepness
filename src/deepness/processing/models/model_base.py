@@ -7,6 +7,7 @@ import numpy as np
 
 from deepness.common.lazy_package_loader import LazyPackageLoader
 from deepness.common.processing_parameters.standardization_parameters import StandardizationParameters
+from deepness.common.processing_parameters.detection_parameters import DetectorType
 
 ort = LazyPackageLoader('onnxruntime')
 
@@ -47,6 +48,7 @@ class ModelBase:
         self.standardization_parameters: StandardizationParameters = self.get_metadata_standarization_parameters()
         
         self.outputs_names = self.get_outputs_channel_names()
+        self.model_type = ''
 
     @classmethod
     def get_model_type_from_metadata(cls, model_file_path: str) -> Optional[str]:
@@ -368,7 +370,7 @@ class ModelBase:
         """
         return self.input_shape[-3]
 
-    def process(self, tiles_batched: np.ndarray):
+    def process(self, tiles_batched: np.ndarray, i=None):
         """ Process a single tile image
 
         Parameters
@@ -381,11 +383,16 @@ class ModelBase:
         np.ndarray
             Single prediction
         """
+        TILE_SIZE = tiles_batched.shape[1]
+        # print(f'unprocessed tiles_batched.shape: {tiles_batched.shape}')
+        # np.save(f"unprocessed_qgis_input{i}", tiles_batched)
         input_batch = self.preprocessing(tiles_batched)
+        # print(f'preprocessed tiles_batched.shape: {input_batch.shape}')
+        # np.save(f"preprocessed_qgis_input{i}", input_batch)
         model_output = self.sess.run(
             output_names=None,
             input_feed={self.input_name: input_batch})
-        res = self.postprocessing(model_output)
+        res = self.postprocessing(model_output, TILE_SIZE)
         return res
 
     def preprocessing(self, tiles_batched: np.ndarray) -> np.ndarray:
@@ -407,9 +414,12 @@ class ModelBase:
         import deepness.processing.models.preprocessing_utils as preprocessing_utils
 
         tiles_batched = preprocessing_utils.limit_channels_number(tiles_batched, limit=self.input_shape[-3])
-        tiles_batched = preprocessing_utils.normalize_values_to_01(tiles_batched)
-        tiles_batched = preprocessing_utils.standardize_values(tiles_batched, params=self.standardization_parameters)
-        tiles_batched = preprocessing_utils.transpose_nhwc_to_nchw(tiles_batched)
+        if self.model_type != DetectorType.RT_DETR:
+            tiles_batched = preprocessing_utils.normalize_values_to_01(tiles_batched)
+            tiles_batched = preprocessing_utils.standardize_values(tiles_batched, params=self.standardization_parameters)
+            tiles_batched = preprocessing_utils.transpose_nhwc_to_nchw(tiles_batched)
+        else:
+            tiles_batched = preprocessing_utils.normalize_6_channels(tiles_batched) # returns NCHW 
 
         return tiles_batched
 

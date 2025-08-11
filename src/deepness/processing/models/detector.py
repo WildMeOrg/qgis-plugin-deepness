@@ -174,7 +174,7 @@ class Detector(ModelBase):
         else:
             raise NotImplementedError("Model with multiple output layer is not supported! Use only one output layer.")
 
-    def postprocessing(self, model_output):
+    def postprocessing(self, model_output, TILE_SIZE):
         """Postprocess model output
 
             NOTE: Maybe refactor this, as it has many added layers of checks which can be simplified.
@@ -201,8 +201,12 @@ class Detector(ModelBase):
 
         batch_detection = []
         outputs_range = len(model_output)
-        
-        if self.model_type == DetectorType.YOLO_ULTRALYTICS_SEGMENTATION or self.model_type == DetectorType.YOLO_v9:
+
+        if (self.model_type == DetectorType.YOLO_ULTRALYTICS_SEGMENTATION or 
+            self.model_type == DetectorType.YOLO_v9):
+            outputs_range = len(model_output[0])
+
+        if (self.model_type == DetectorType.RT_DETR):
             outputs_range = len(model_output[0])
 
         for i in range(outputs_range):
@@ -222,6 +226,8 @@ class Detector(ModelBase):
                 boxes, conf, classes, masks = self._postprocessing_YOLO_ULTRALYTICS_SEGMENTATION(model_output[0][i], model_output[1][i])
             elif self.model_type == DetectorType.YOLO_ULTRALYTICS_OBB:
                 boxes, conf, classes, rots = self._postprocessing_YOLO_ULTRALYTICS_OBB(model_output[0][i])
+            elif self.model_type == DetectorType.RT_DETR:
+                boxes, conf, classes = self._postprocessing_RT_DETR(model_output[0][i], TILE_SIZE)
             else:
                 raise NotImplementedError(f"Model type not implemented! ('{self.model_type}')")
 
@@ -320,6 +326,35 @@ class Detector(ModelBase):
         boxes = np.array(outputs_nms[:, :4], dtype=int)
         conf = np.max(outputs_nms[:, 4:], axis=1)
         classes = np.argmax(outputs_nms[:, 4:], axis=1)
+
+        return boxes, conf, classes
+    
+    def _postprocessing_RT_DETR(self, model_output, TILE_SIZE):
+        # filter outputs by confidence score
+        outputs_filtered = np.array(list(filter(lambda x: np.max(x[4:]) >= self.confidence,
+                                                 model_output)))
+        if len(outputs_filtered.shape) < 2:
+            return [], [], []
+        outputs_x1y1x2y2 = self.xywh2xyxy(outputs_filtered)
+        boxes = outputs_x1y1x2y2[:,:4]
+        probabilities = outputs_x1y1x2y2[:, 4:][:,0]
+
+        # scale boudning boxes 
+        boxes = boxes * TILE_SIZE
+        boxes = np.array(boxes, dtype=int)
+
+        # nms
+        pick_indxs = self.non_max_suppression_fast(
+            boxes,
+            probs=probabilities,
+            iou_threshold=self.iou_threshold)
+
+        boxes = boxes[pick_indxs]
+        probabilities = probabilities[pick_indxs]
+
+        boxes = np.array(boxes, dtype=int)
+        conf = probabilities
+        classes = np.argmax(np.expand_dims(conf, axis=1), axis=1)
 
         return boxes, conf, classes
 

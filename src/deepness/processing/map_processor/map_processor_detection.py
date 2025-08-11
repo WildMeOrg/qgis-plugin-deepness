@@ -4,8 +4,6 @@ from typing import List
 import cv2
 import numpy as np
 from qgis.core import QgsFeature, QgsGeometry, QgsProject, QgsVectorLayer
-from qgis.PyQt.QtCore import QVariant
-from qgis.core import QgsFields, QgsField
 
 from deepness.common.processing_parameters.detection_parameters import DetectionParameters
 from deepness.processing import processing_utils
@@ -45,11 +43,13 @@ class MapProcessorDetection(MapProcessorWithModel):
 
     def _run(self) -> MapProcessingResult:
         all_bounding_boxes = []  # type: List[Detection]
+        i=0
         for tile_img_batched, tile_params_batched in self.tiles_generator_batched():
             if self.isCanceled():
                 return MapProcessingResultCanceled()
 
-            bounding_boxes_in_tile_batched = self._process_tile(tile_img_batched, tile_params_batched)
+            bounding_boxes_in_tile_batched = self._process_tile(tile_img_batched, tile_params_batched, i)
+            i+=1
             all_bounding_boxes += [d for det in bounding_boxes_in_tile_batched for d in det]
 
         with_rot = self.detection_parameters.detector_type == DetectorType.YOLO_ULTRALYTICS_OBB
@@ -61,9 +61,9 @@ class MapProcessorDetection(MapProcessorWithModel):
             all_bounding_boxes_restricted = []
 
         gui_delegate = self._create_vlayer_for_output_bounding_boxes(all_bounding_boxes_restricted)
-
         result_message = self._create_result_message(all_bounding_boxes_restricted)
         self._all_detections = all_bounding_boxes_restricted
+
         return MapProcessingResultSuccess(
             message=result_message,
             gui_delegate=gui_delegate,
@@ -130,16 +130,9 @@ class MapProcessorDetection(MapProcessorWithModel):
         for channel_id in channels:
             filtered_bounding_boxes = [det for det in bounding_boxes if det.clss == channel_id]
             print(f'Detections for class {channel_id}: {len(filtered_bounding_boxes)}')
-            
-            vlayer = QgsVectorLayer("multipolygon", self.model.get_channel_name(0, channel_id), "memory")
-            vlayer.setCrs(self.rlayer.crs())
-            prov = vlayer.dataProvider()
-            prov.addAttributes([QgsField("confidence", QVariant.Double)])
-            vlayer.updateFields()
 
             features = []
             for det in filtered_bounding_boxes:
-                feature = QgsFeature()
                 if det.mask is None:
                     bbox_corners_pixels = det.bbox.get_4_corners()
                     bbox_corners_crs = processing_utils.transform_points_list_xy_to_target_crs(
@@ -147,13 +140,13 @@ class MapProcessorDetection(MapProcessorWithModel):
                         extent=self.extended_extent,
                         rlayer_units_per_pixel=self.rlayer_units_per_pixel,
                     )
-                    #feature = QgsFeature() #move outside of the if block
+                    feature = QgsFeature()
                     polygon_xy_vec_vec = [
                         bbox_corners_crs
                     ]
                     geometry = QgsGeometry.fromPolygonXY(polygon_xy_vec_vec)
-                    #feature.setGeometry(geometry)
-                    #features.append(feature)
+                    feature.setGeometry(geometry)
+                    features.append(feature)
                 else:
                     contours, _ = cv2.findContours(det.mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     contours = sorted(contours, key=cv2.contourArea, reverse=True)
@@ -176,20 +169,17 @@ class MapProcessorDetection(MapProcessorWithModel):
                             rlayer_units_per_pixel=self.rlayer_units_per_pixel,
                         )
 
-                        #feature = QgsFeature()
+                        feature = QgsFeature()
                         polygon_xy_vec_vec = [
                             mask_corners_crs
                         ]
                         geometry = QgsGeometry.fromPolygonXY(polygon_xy_vec_vec)
-                        #feature.setGeometry(geometry)
-                        #features.append(feature)
-                feature.setGeometry(geometry)
-                feature.setAttributes([float(det.conf)])
-                features.append(feature)
-            
-            #vlayer = QgsVectorLayer("multipolygon", self.model.get_channel_name(0, channel_id), "memory")
-            #vlayer.setCrs(self.rlayer.crs())
-            #prov = vlayer.dataProvider()
+                        feature.setGeometry(geometry)
+                        features.append(feature)
+
+            vlayer = QgsVectorLayer("multipolygon", self.model.get_channel_name(0, channel_id), "memory")
+            vlayer.setCrs(self.rlayer.crs())
+            prov = vlayer.dataProvider()
 
             color = vlayer.renderer().symbol().color()
             OUTPUT_VLAYER_COLOR_TRANSPARENCY = 80
@@ -279,8 +269,8 @@ class MapProcessorDetection(MapProcessorWithModel):
         for det in bounding_boxes_relative:
             det.convert_to_global(offset_x=tile_params.start_pixel_x, offset_y=tile_params.start_pixel_y)
 
-    def _process_tile(self, tile_img: np.ndarray, tile_params_batched: List[TileParams]) -> np.ndarray:
-        bounding_boxes_batched: List[Detection] = self.model.process(tile_img)
+    def _process_tile(self, tile_img: np.ndarray, tile_params_batched: List[TileParams],i) -> np.ndarray:
+        bounding_boxes_batched: List[Detection] = self.model.process(tile_img, i)
 
         for bounding_boxes, tile_params in zip(bounding_boxes_batched, tile_params_batched):
             self.convert_bounding_boxes_to_absolute_positions(bounding_boxes, tile_params)

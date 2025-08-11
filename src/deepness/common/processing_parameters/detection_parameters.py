@@ -2,8 +2,6 @@ import enum
 from dataclasses import dataclass
 
 from deepness.common.processing_parameters.map_processing_parameters import MapProcessingParameters
-from deepness.processing.models.model_base import ModelBase
-
 
 @dataclass
 class DetectorTypeParameters:
@@ -24,6 +22,7 @@ class DetectorType(enum.Enum):
     YOLO_ULTRALYTICS = 'YOLO_Ultralytics'
     YOLO_ULTRALYTICS_SEGMENTATION = 'YOLO_Ultralytics_segmentation'
     YOLO_ULTRALYTICS_OBB = 'YOLO_Ultralytics_obb'
+    RT_DETR = 'RT_DETR'
 
     def get_parameters(self):
         if self == DetectorType.YOLO_v5_v7_DEFAULT:
@@ -40,6 +39,10 @@ class DetectorType(enum.Enum):
         elif self == DetectorType.YOLO_ULTRALYTICS or self == DetectorType.YOLO_ULTRALYTICS_SEGMENTATION or self == DetectorType.YOLO_ULTRALYTICS_OBB:
             return DetectorTypeParameters(
                 has_inverted_output_shape=True,
+                skipped_objectness_probability=True,
+            )
+        elif self == DetectorType.RT_DETR:
+            return DetectorTypeParameters(
                 skipped_objectness_probability=True,
             )
         else:
@@ -61,7 +64,7 @@ class DetectionParameters(MapProcessingParameters):
     """
     Parameters for Inference of detection model (including pre/post-processing) obtained from UI.
     """
-
+    from deepness.processing.models.model_base import ModelBase
     model: ModelBase  # wrapper of the loaded model
 
     confidence: float
