@@ -6,10 +6,12 @@ import logging
 import os
 from typing import Optional
 
+from qgis.gui import QgsCollapsibleGroupBox
 from qgis.core import Qgis, QgsMapLayerProxyModel, QgsProject
 from qgis.PyQt import QtWidgets, uic
 from qgis.PyQt.QtCore import pyqtSignal
 from qgis.PyQt.QtWidgets import QComboBox, QFileDialog, QMessageBox
+from qgis.PyQt.QtWidgets import QFormLayout, QWidget, QLineEdit, QPushButton, QSpinBox
 
 from deepness.common.config_entry_key import ConfigEntryKey
 from deepness.common.defines import IS_DEBUG, PLUGIN_NAME
@@ -23,6 +25,7 @@ from deepness.common.processing_parameters.regression_parameters import Regressi
 from deepness.common.processing_parameters.segmentation_parameters import SegmentationParameters
 from deepness.common.processing_parameters.superresolution_parameters import SuperresolutionParameters
 from deepness.common.processing_parameters.training_data_export_parameters import TrainingDataExportParameters
+from deepness.common.processing_parameters.classify_chip_parameters import ClassifyChipParameters
 from deepness.processing.models.model_base import ModelBase
 from deepness.widgets.input_channels_mapping.input_channels_mapping_widget import InputChannelsMappingWidget
 from deepness.widgets.training_data_export_widget.training_data_export_widget import TrainingDataExportWidget
@@ -43,6 +46,7 @@ class DeepnessDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     closingPlugin = pyqtSignal()
     run_model_inference_signal = pyqtSignal(MapProcessingParameters)  # run Segmentation or Detection
     run_training_data_export_signal = pyqtSignal(TrainingDataExportParameters)
+    run_classify_chip_signal = pyqtSignal(ClassifyChipParameters)
 
     def __init__(self, iface, parent=None):
         super(DeepnessDockWidget, self).__init__(parent)
@@ -142,6 +146,57 @@ class DeepnessDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
 
     def _rlayer_updated(self):
         self._input_channels_mapping_widget.set_rlayer(self._get_input_layer())
+    
+    ####################### Helper functions for classification begins #######################
+    def _mk_layer_combo(self, filter_model):
+        combo = self._new_layer_combo(filter_model)
+        return combo
+
+    def _new_layer_combo(self, filter_model):
+        c = self.mMapLayerComboBox_areaMaskLayer.__class__(self) # duplicate widget 
+        c.setFilters(filter_model) # filter for vector layers (bounding box layers)
+        return c
+
+    # def _refresh_bbox_combo(self, *args):
+    #     # QgsMapLayerComboBox refreshes automatically; nothing to do here
+    #     pass
+
+    def _pick_ckpt(self, lineedit):
+        fp, _ = QFileDialog.getOpenFileName(self, "Pick weights checkpoint", "", "PyTorch (*.pt *.pth);;All (*)")
+        if fp: 
+            lineedit.setText(fp)
+
+    def _parse_strings(self, s):   
+        return [x.strip() for x in s.split(",") if x.strip()]
+    
+    def _parse_floats(self, s): 
+        return [float(x.strip()) for x in s.split(",") if x.strip()]
+
+    def _emit_classify_chip(self):
+        raster = self.mMapLayerComboBox_inputLayer.currentLayer() # pre-selected input data 
+        bbox   = self.cmb_bbox.currentLayer() # list of bounding box layers
+        if raster is None or bbox is None:
+            QMessageBox.warning(self, "Deepness", "Pick raster and vector (bounding box) layer.")
+            return
+        cfg = {
+            'model_name': None,
+            'weights_ckpt': self.le_ckpt.text(),
+            'class_names': self._parse_strings(self.le_classes.text()),
+            'normalization_mean': self._parse_floats(self.le_mean.text()),
+            'normalization_std':  self._parse_floats(self.le_std.text()),
+            'model_arch': self.le_arch.text(),
+            'n_channels': int(self.sb_ch.value()),
+            'image_size': int(self.sb_size.value()),
+        }
+        map_processing_parameters = self._get_map_processing_parameters()
+        params = ClassifyChipParameters(
+            **map_processing_parameters.__dict__,
+            raster_id= raster.id(),
+            vector_id=bbox.id(),
+            config=cfg,
+        )
+        self.run_classify_chip_signal.emit(params)
+    ####################### Helper functions for classification ends #######################
 
     def _setup_misc_ui(self):
         """ Setup some misceleounous ui forms
@@ -170,6 +225,60 @@ class DeepnessDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         for detector_type in DetectorType.get_all_display_values():
             self.comboBox_detectorType.addItem(detector_type)
         self._detector_type_changed()
+
+        ####################### GUI for classification begins #######################
+        # set up panel 
+        self.group_chip = QgsCollapsibleGroupBox("Chip classification on input data selected above", self)
+        self.group_chip.setCollapsed(False)
+        form = QFormLayout(self.group_chip)
+
+        # select vector (bounding box) layer 
+        self.cmb_bbox = self._mk_layer_combo(filter_model=QgsMapLayerProxyModel.VectorLayer)
+        form.addRow("Bounding boxes:", self.cmb_bbox)
+
+        # select path to model checkpoint 
+        self.le_ckpt = QLineEdit('models/d4-cls-exp1_6ch-3cat-48px-newval_best.pt')
+        btn_ckpt = QPushButton("Browse…")
+        btn_ckpt.clicked.connect(lambda: self._pick_ckpt(self.le_ckpt))
+        row_ckpt = QtWidgets.QHBoxLayout() # arrange widgets left to right
+        row_ckpt.addWidget(self.le_ckpt)
+        row_ckpt.addWidget(btn_ckpt)
+        wrap_ckpt = QWidget() # wrap the row of widgets into one
+        wrap_ckpt.setLayout(row_ckpt)
+        form.addRow("Model file path (.pt):", wrap_ckpt)
+
+        # select model configuration (with default values)
+        self.le_mname = QLineEdit('Tree Classifier')
+        self.le_classes = QLineEdit('deadtree,topdownthreat,tree')
+        self.le_mean = QLineEdit('0.358034,0.492683,0.479417,0.502045,0.499618,0.536634')
+        self.le_std = QLineEdit('0.213879,0.261817,0.220773,0.279437,0.281337,0.199962')
+        self.le_arch = QLineEdit('tf_efficientnet_b4.ns_jft_in1k')
+        self.sb_ch = QSpinBox(); self.sb_ch.setRange(1, 12); self.sb_ch.setValue(6)
+        self.sb_size = QSpinBox(); self.sb_size.setRange(16, 1024); self.sb_size.setValue(48)
+
+        form.addRow("Model Name:", self.le_mname)
+        form.addRow("Class Names:", self.le_classes)
+        form.addRow("Normalization Mean:", self.le_mean)
+        form.addRow("Normalization Std:", self.le_std)
+        form.addRow("Model architecture:", self.le_arch)
+        form.addRow("Number of Channels:", self.sb_ch)
+        form.addRow("Image Size:", self.sb_size)
+
+        # button to run classification 
+        btn_run_chip = QPushButton("Classify Chips")
+        btn_run_chip.clicked.connect(self._emit_classify_chip)
+        form.addRow("", btn_run_chip)
+
+        # insert the entire block just below "Training data export" block
+        export_block = self.verticalLayout_trainingDataExport.parentWidget()
+        layout = self.verticalLayout_3
+        layout.insertWidget(layout.indexOf(export_block)+1, self.group_chip)
+
+        # # keep comboboxes synced with project layers
+        # QgsProject.instance().layersAdded.connect(self._refresh_bbox_combo)
+        # QgsProject.instance().layersRemoved.connect(self._refresh_bbox_combo)
+        # self._refresh_bbox_combo()
+        ####################### GUI for classification ends #######################
 
         self._rlayer_updated()  # to force refresh the dependant ui elements
 

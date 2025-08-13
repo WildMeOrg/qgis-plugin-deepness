@@ -8,9 +8,9 @@ Skeleton of this file was generate with the QGis plugin to create plugin skeleto
 import logging
 import traceback
 
-from qgis.core import Qgis, QgsApplication, QgsProject, QgsVectorLayer
+from qgis.core import Qgis, QgsApplication, QgsProject, QgsVectorLayer, QgsField, QgsWkbTypes
 from qgis.gui import QgisInterface
-from qgis.PyQt.QtCore import QCoreApplication, Qt
+from qgis.PyQt.QtCore import QCoreApplication, Qt, QVariant
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QMessageBox
 
@@ -18,6 +18,8 @@ from deepness.common.defines import IS_DEBUG, PLUGIN_NAME
 from deepness.common.lazy_package_loader import LazyPackageLoader
 from deepness.common.processing_parameters.map_processing_parameters import MapProcessingParameters, ProcessedAreaType
 from deepness.common.processing_parameters.training_data_export_parameters import TrainingDataExportParameters
+from deepness.common.processing_parameters.classify_chip_parameters import ClassifyChipParameters
+
 from deepness.deepness_dockwidget import DeepnessDockWidget
 from deepness.dialogs.resizable_message_box import ResizableMessageBox
 from deepness.images.get_image_path import get_icon_path
@@ -25,6 +27,8 @@ from deepness.processing.map_processor.map_processing_result import (MapProcessi
                                                                      MapProcessingResultFailed,
                                                                      MapProcessingResultSuccess)
 from deepness.processing.map_processor.map_processor_training_data_export import MapProcessorTrainingDataExport
+from deepness.processing.classify_chip import ClassifyChipTask
+
 
 cv2 = LazyPackageLoader('cv2')
 
@@ -167,6 +171,9 @@ class Deepness:
         # when closing the docked window:
         # self.dockwidget = None
 
+        # QgsProject.instance().layersAdded.disconnect(self.dockwidget._refresh_bbox_combo)
+        # QgsProject.instance().layersRemoved.disconnect(self.dockwidget._refresh_bbox_combo)
+
         self.pluginIsActive = False
 
     def unload(self):
@@ -203,6 +210,7 @@ class Deepness:
             self.dockwidget.closingPlugin.connect(self.onClosePlugin)
             self.dockwidget.run_model_inference_signal.connect(self._run_model_inference)
             self.dockwidget.run_training_data_export_signal.connect(self._run_training_data_export)
+            self.dockwidget.run_classify_chip_signal.connect(self._classify_chip)
 
             self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dockwidget)
             self.dockwidget.show()
@@ -248,6 +256,56 @@ class Deepness:
         self._map_processor.finished_signal.connect(self._map_processor_finished)
         self._map_processor.show_img_signal.connect(self._show_img)
         QgsApplication.taskManager().addTask(self._map_processor)
+        self._display_processing_started_info()
+
+    def _classify_chip(self, classify_chip_parameters: ClassifyChipParameters):
+        raster_id = classify_chip_parameters.raster_id
+        vector_id = classify_chip_parameters.vector_id
+        cfg       = classify_chip_parameters.config
+        task = ClassifyChipTask(raster_id, vector_id, cfg)
+
+        def on_done(ok, task=task):
+            if not ok or not task.results:
+                print("Classification task failed or empty results.")
+                return
+
+            # temporary memory layer
+            src = task.vec # already reprojected bboxes
+            geom_name = QgsWkbTypes.displayString(src.wkbType())
+            dup = QgsVectorLayer(f"{geom_name}?crs={src.crs().authid()}", task.OUT_LAYER_NAME, "memory")
+
+            # copy original attributes and features
+            prov = dup.dataProvider()
+            prov.addAttributes(src.fields()) 
+            dup.updateFields()
+            prov.addFeatures(list(src.getFeatures())) 
+
+            # add custom attribute fields 
+            dup.startEditing()
+            dup.addAttribute(QgsField(task.ATTR_LABEL_FIELD, QVariant.String)) # label
+            for cname in task.CLASS_NAMES: # class probabilities 
+                dup.addAttribute(QgsField(f"{task.ATTR_PROB_PREFIX}{cname}", QVariant.Double))
+            dup.updateFields()
+
+            # fill attribute fields by feature id (fid)
+            for f in dup.getFeatures():
+                fid = f.id()
+                if fid in task.results:
+                    label, probs = task.results[fid]
+                    f[task.ATTR_LABEL_FIELD] = label
+                    for j, cname in enumerate(task.CLASS_NAMES):
+                        f[f"{task.ATTR_PROB_PREFIX}{cname}"] = float(probs[j])
+                    dup.updateFeature(f)
+            dup.commitChanges()
+
+            # add temporary layer to QGIS 
+            QgsProject.instance().addMapLayer(dup)
+            print(f"Added prediction layer: {task.OUT_LAYER_NAME} with fields: "
+                f"{task.ATTR_LABEL_FIELD}, {[task.ATTR_PROB_PREFIX + c for c in task.CLASS_NAMES]}")
+        
+        task.taskCompleted.connect(lambda: on_done(True))
+        task.taskTerminated.connect(lambda: on_done(False))
+        QgsApplication.taskManager().addTask(task)
         self._display_processing_started_info()
 
     def _run_model_inference(self, params: MapProcessingParameters):
