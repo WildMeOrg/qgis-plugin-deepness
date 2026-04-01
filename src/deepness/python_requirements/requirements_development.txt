@@ -5,7 +5,7 @@
 pytest==7.4.0
 pytest-cov==4.1.0
 flake8==6.0.0
-onnx==1.14.0
+onnx==1.21.0
 
 # docs
 sphinx==6.1.3
