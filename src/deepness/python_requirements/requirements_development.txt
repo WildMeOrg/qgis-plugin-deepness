@@ -2,7 +2,7 @@
 -r requirements.txt
 
 # Requirements required only to test and debug code while developing
-pytest==7.4.0
+pytest==9.0.3
 pytest-cov==4.1.0
 flake8==6.0.0
 onnx==1.14.0
